@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -370,7 +371,8 @@ func browseDevice(gateway string, port int, deviceID string, browseID string, pu
 	})
 
 	// Build variables list (expand struct tags into member paths)
-	variables := make([]VariableInfo, 0, len(tags)*2)
+	var atomicVars []VariableInfo
+	var structCandidates []candidateVar
 	structTags := make(map[string]string)
 
 	for _, t := range tags {
@@ -389,14 +391,14 @@ func browseDevice(gateway string, port int, deviceID string, browseID string, pu
 			structTags[t.Name] = tmpl.Name
 
 			// Expand only first-level struct members (deeper levels can't be read individually)
-			expandMembers(&variables, t.Name, tmpl, templates, deviceID, gateway, port, 0, 1)
+			expandMembers(&structCandidates, t.Name, tmpl, templates, deviceID, gateway, port, 0, 1)
 		} else {
 			// Atomic tag
 			rawType := t.SymbolType & 0x00FF
 			cipType := resolveCipType(rawType)
 			natsType := cipToNatsDatatype(cipType)
 
-			variables = append(variables, VariableInfo{
+			atomicVars = append(atomicVars, VariableInfo{
 				ModuleID:    moduleID,
 				DeviceID:    deviceID,
 				VariableID:  t.Name,
@@ -409,6 +411,15 @@ func browseDevice(gateway string, port int, deviceID string, browseID string, pu
 			})
 		}
 	}
+
+	// Filter struct member candidates for readability (concurrent, 10 workers)
+	logInfo("eip", "Testing readability of %d struct member paths...", len(structCandidates))
+	readableStructVars := filterReadable(structCandidates, gateway, port, publishProgress, browseID, deviceID)
+
+	// Combine atomic + readable struct vars
+	variables := make([]VariableInfo, 0, len(atomicVars)+len(readableStructVars))
+	variables = append(variables, atomicVars...)
+	variables = append(variables, readableStructVars...)
 
 	// Build UDT exports
 	udts := make(map[string]UdtExport)
@@ -455,8 +466,15 @@ func browseDevice(gateway string, port int, deviceID string, browseID string, pu
 	return result, nil
 }
 
-// expandMembers recursively expands a struct tag's members into flat variable entries.
-func expandMembers(variables *[]VariableInfo, basePath string, tmpl *UdtTemplate, templates map[uint16]*UdtTemplate, deviceID string, gateway string, port int, depth, maxDepth int) {
+// candidateVar holds a potential variable before readability testing.
+type candidateVar struct {
+	info VariableInfo
+	path string
+}
+
+// expandMembers recursively expands a struct tag's members into candidate variable entries.
+// Does NOT test readability — call filterReadable afterwards.
+func expandMembers(candidates *[]candidateVar, basePath string, tmpl *UdtTemplate, templates map[uint16]*UdtTemplate, deviceID string, gateway string, port int, depth, maxDepth int) {
 	if depth >= maxDepth {
 		return
 	}
@@ -471,43 +489,113 @@ func expandMembers(variables *[]VariableInfo, basePath string, tmpl *UdtTemplate
 		if field.Datatype == "STRUCT" && field.Desc.IsStruct() {
 			nestedID := field.Desc.NestedTemplateID()
 			if nestedTmpl, ok := templates[nestedID]; ok {
-				expandMembers(variables, memberPath, nestedTmpl, templates, deviceID, gateway, port, depth+1, maxDepth)
+				expandMembers(candidates, memberPath, nestedTmpl, templates, deviceID, gateway, port, depth+1, maxDepth)
 				continue
 			}
 		}
 
 		natsType := cipToNatsDatatype(field.Datatype)
 
-		// Test if this member tag is readable by the PLC — skip unreadable internal AOI members
-		if !testTagReadable(gateway, port, memberPath) {
-			logDebug("eip", "Skipping unreadable member %s during browse", memberPath)
-			continue
-		}
-
-		*variables = append(*variables, VariableInfo{
-			ModuleID:    moduleID,
-			DeviceID:    deviceID,
-			VariableID:  memberPath,
-			Value:       nil,
-			Datatype:    natsType,
-			CipType:     field.Datatype,
-			Quality:     "unknown",
-			Origin:      "plc",
-			LastUpdated: 0,
+		*candidates = append(*candidates, candidateVar{
+			path: memberPath,
+			info: VariableInfo{
+				ModuleID:    moduleID,
+				DeviceID:    deviceID,
+				VariableID:  memberPath,
+				Value:       nil,
+				Datatype:    natsType,
+				CipType:     field.Datatype,
+				Quality:     "unknown",
+				Origin:      "plc",
+				LastUpdated: 0,
+			},
 		})
 	}
+}
+
+const (
+	readableTestTimeout  = 2 * time.Second
+	readableWorkerCount  = 10
+)
+
+// filterReadable tests candidates for readability concurrently and returns only readable ones.
+func filterReadable(candidates []candidateVar, gateway string, port int, publishProgress func(BrowseProgressMessage), browseID, deviceID string) []VariableInfo {
+	type result struct {
+		index    int
+		readable bool
+	}
+
+	results := make(chan result, len(candidates))
+	work := make(chan int, len(candidates))
+
+	// Feed work
+	for i := range candidates {
+		work <- i
+	}
+	close(work)
+
+	// Spawn workers
+	var wg sync.WaitGroup
+	for w := 0; w < readableWorkerCount; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for idx := range work {
+				readable := testTagReadable(gateway, port, candidates[idx].path)
+				results <- result{idx, readable}
+			}
+		}()
+	}
+
+	// Collect results with progress
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	readable := make([]bool, len(candidates))
+	completed := 0
+	for r := range results {
+		readable[r.index] = r.readable
+		completed++
+		if completed%50 == 0 || completed == len(candidates) {
+			publishProgress(BrowseProgressMessage{
+				BrowseID:      browseID,
+				ModuleID:      moduleID,
+				DeviceID:      deviceID,
+				Phase:         "reading",
+				TotalTags:     len(candidates),
+				CompletedTags: completed,
+				Message:       fmt.Sprintf("Tested %d/%d tag paths", completed, len(candidates)),
+				Timestamp:     time.Now().UnixMilli(),
+			})
+		}
+	}
+
+	var out []VariableInfo
+	skipped := 0
+	for i, c := range candidates {
+		if readable[i] {
+			out = append(out, c.info)
+		} else {
+			skipped++
+			logDebug("eip", "Skipping unreadable member %s during browse", c.path)
+		}
+	}
+	logInfo("eip", "Readability filter: %d readable, %d skipped", len(out), skipped)
+	return out
 }
 
 // testTagReadable does a quick create+read to check if a tag path is accessible on the PLC.
 // Returns true if readable, false if the PLC rejects it (e.g. internal AOI members).
 func testTagReadable(gateway string, port int, tagPath string) bool {
 	attrs := buildTagAttrs(gateway, port, tagPath, 0)
-	tag, err := createTag(attrs, 5*time.Second)
+	tag, err := createTag(attrs, readableTestTimeout)
 	if err != nil {
 		return false
 	}
 	defer tag.Close()
-	if err := tag.Read(5 * time.Second); err != nil {
+	if err := tag.Read(readableTestTimeout); err != nil {
 		return false
 	}
 	return true
