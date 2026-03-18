@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*.*.*'
 
+env:
+  LIBPLCTAG_VERSION: "2.6.15"
+
 jobs:
   compile:
     strategy:
@@ -26,10 +29,18 @@ jobs:
         with:
           go-version: '1.24'
 
-      - name: Install libplctag
+      - name: Build libplctag from source
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y libplctag-dev
+          sudo apt-get install -y cmake build-essential
+          git clone --depth 1 --branch v${{ env.LIBPLCTAG_VERSION }} \
+            https://github.com/libplctag/libplctag.git /tmp/libplctag
+          cmake -S /tmp/libplctag -B /tmp/libplctag/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr/local
+          cmake --build /tmp/libplctag/build --parallel
+          sudo cmake --install /tmp/libplctag/build
+          sudo ldconfig
 
       - name: Compile for ${{ matrix.platform }}
         run: |
