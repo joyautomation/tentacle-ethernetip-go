@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -26,14 +27,18 @@ type DeviceConnection struct {
 
 // CachedVar holds the cached state of a single tag.
 type CachedVar struct {
-	TagName      string
-	Datatype     string // "number", "boolean", "string"
-	CipType      string // "DINT", "REAL", etc.
-	Value        interface{}
-	Quality      string
-	LastRead     int64
-	TagHandle    *PlcTag // persistent libplctag handle — created once, reused on every poll
-	CreateFails  int     // consecutive handle creation failures — stop retrying after maxCreateRetries
+	TagName            string
+	Datatype           string // "number", "boolean", "string"
+	CipType            string // "DINT", "REAL", etc.
+	Value              interface{}
+	Quality            string
+	LastRead           int64
+	TagHandle          *PlcTag          // persistent libplctag handle — created once, reused on every poll
+	CreateFails        int              // consecutive handle creation failures — stop retrying after maxCreateRetries
+	Deadband           *DeadBandConfig  // RBE deadband config (nil = publish on any change)
+	DisableRBE         bool             // force publish all values
+	LastPublishedValue interface{}      // last value that was actually published
+	LastPublishedTime  int64            // unix ms when last published
 }
 
 const maxCreateRetries = 3 // stop trying to create handle after this many consecutive failures
@@ -271,10 +276,34 @@ func (s *Scanner) handleSubscribe(msg *nats.Msg) {
 				CipType: cipType,
 				Quality: "unknown",
 			}
+			// Apply RBE config from subscribe request
+			if req.Deadbands != nil {
+				if db, ok := req.Deadbands[tagName]; ok {
+					cv.Deadband = &db
+				}
+			}
+			if req.DisableRBE != nil {
+				if disable, ok := req.DisableRBE[tagName]; ok {
+					cv.DisableRBE = disable
+				}
+			}
 			// Don't create tag handles here — pollOnce creates them lazily.
 			// This keeps subscribe fast (no blocking on network I/O).
 			conn.Variables[tagName] = cv
 			addedCount++
+		} else {
+			// Update RBE config for existing variables (subscriber may have changed config)
+			existing := conn.Variables[tagName]
+			if req.Deadbands != nil {
+				if db, ok := req.Deadbands[tagName]; ok {
+					existing.Deadband = &db
+				}
+			}
+			if req.DisableRBE != nil {
+				if disable, ok := req.DisableRBE[tagName]; ok {
+					existing.DisableRBE = disable
+				}
+			}
 		}
 	}
 	conn.mu.Unlock()
@@ -449,6 +478,105 @@ func (s *Scanner) handleCommand(msg *nats.Msg) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// RBE (Report By Exception) filtering
+// ═══════════════════════════════════════════════════════════════════════════
+
+// shouldPublish determines whether a new value should be published based on
+// the tag's RBE configuration. Returns true if the value should be published.
+func shouldPublish(v *CachedVar, newValue interface{}, nowMs int64) bool {
+	// DisableRBE = force publish everything
+	if v.DisableRBE {
+		return true
+	}
+
+	// First read — always publish
+	if v.LastPublishedTime == 0 {
+		return true
+	}
+
+	// No deadband configured — publish on any change
+	if v.Deadband == nil {
+		return !valuesEqual(v.LastPublishedValue, newValue)
+	}
+
+	elapsed := nowMs - v.LastPublishedTime
+
+	// MaxTime exceeded — force publish regardless of change or minTime
+	if v.Deadband.MaxTime > 0 && elapsed >= v.Deadband.MaxTime {
+		return true
+	}
+
+	// MinTime not yet elapsed — suppress even if value changed enough
+	if v.Deadband.MinTime > 0 && elapsed < v.Deadband.MinTime {
+		return false
+	}
+
+	// Numeric deadband check
+	oldFloat, oldOk := toFloat64(v.LastPublishedValue)
+	newFloat, newOk := toFloat64(newValue)
+	if oldOk && newOk {
+		return math.Abs(newFloat-oldFloat) > v.Deadband.Value
+	}
+
+	// Non-numeric (bool/string) — publish on any change
+	return !valuesEqual(v.LastPublishedValue, newValue)
+}
+
+// valuesEqual compares two tag values for equality.
+func valuesEqual(a, b interface{}) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	// Normalize numeric types for comparison
+	af, aOk := toFloat64(a)
+	bf, bOk := toFloat64(b)
+	if aOk && bOk {
+		return af == bf
+	}
+	return fmt.Sprintf("%v", a) == fmt.Sprintf("%v", b)
+}
+
+// toFloat64 converts a numeric interface{} to float64.
+func toFloat64(v interface{}) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int8:
+		return float64(n), true
+	case int16:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case uint:
+		return float64(n), true
+	case uint8:
+		return float64(n), true
+	case uint16:
+		return float64(n), true
+	case uint32:
+		return float64(n), true
+	case uint64:
+		return float64(n), true
+	case bool:
+		if n {
+			return 1, true
+		}
+		return 0, true
+	default:
+		return 0, false
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Polling loop
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -578,6 +706,7 @@ func (s *Scanner) pollOnce(conn *DeviceConnection) {
 	// Collect results and publish
 	now := time.Now().UnixMilli()
 	published := 0
+	suppressed := 0
 	for r := range results {
 		conn.mu.Lock()
 		v, ok := conn.Variables[r.name]
@@ -590,6 +719,19 @@ func (s *Scanner) pollOnce(conn *DeviceConnection) {
 			v.Quality = "good"
 			v.LastRead = now
 		}
+
+		// Apply RBE filtering
+		if ok && !shouldPublish(v, r.value, now) {
+			suppressed++
+			conn.mu.Unlock()
+			continue
+		}
+
+		// Update last-published state
+		if ok {
+			v.LastPublishedValue = r.value
+			v.LastPublishedTime = now
+		}
 		conn.mu.Unlock()
 
 		dataMsg := PlcDataMessage{
@@ -600,13 +742,19 @@ func (s *Scanner) pollOnce(conn *DeviceConnection) {
 			Timestamp:  now,
 			Datatype:   r.natsType,
 		}
+		if ok && v.Deadband != nil {
+			dataMsg.Deadband = v.Deadband
+		}
+		if ok && v.DisableRBE {
+			dataMsg.DisableRBE = true
+		}
 		data, _ := json.Marshal(dataMsg)
 		subject := fmt.Sprintf("ethernetip.data.%s.%s", conn.DeviceID, sanitizeTagForSubject(r.name))
 		_ = s.nc.Publish(subject, data)
 		published++
 	}
 
-	logInfo("eip", "Poll cycle for %s: %d/%d tags in %v", conn.DeviceID, published, len(work), time.Since(pollStart))
+	logInfo("eip", "Poll cycle for %s: %d published, %d suppressed (RBE), %d total in %v", conn.DeviceID, published, suppressed, len(work), time.Since(pollStart))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

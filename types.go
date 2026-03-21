@@ -15,16 +15,25 @@ type BrowseRequest struct {
 	Async    bool   `json:"async,omitempty"`
 }
 
+// DeadBandConfig defines RBE (Report By Exception) thresholds for a tag.
+type DeadBandConfig struct {
+	Value   float64 `json:"value"`            // only publish if change exceeds this amount
+	MinTime int64   `json:"minTime,omitempty"` // ms — suppress publishes more frequent than this
+	MaxTime int64   `json:"maxTime,omitempty"` // ms — force publish if exceeded, 0 = disabled
+}
+
 // SubscribeRequest is the JSON payload for ethernetip.subscribe requests.
 type SubscribeRequest struct {
-	DeviceID     string            `json:"deviceId"`
-	Host         string            `json:"host"`
-	Port         int               `json:"port,omitempty"`
-	Tags         []string          `json:"tags"`
-	CipTypes     map[string]string `json:"cipTypes,omitempty"`     // tag name → CIP type (e.g. "REAL", "DINT")
-	StructTypes  map[string]string `json:"structTypes,omitempty"`  // base tag name → UDT template name (e.g. "Analog_Input")
-	ScanRate     int               `json:"scanRate,omitempty"`
-	SubscriberID string            `json:"subscriberId"`
+	DeviceID     string                     `json:"deviceId"`
+	Host         string                     `json:"host"`
+	Port         int                        `json:"port,omitempty"`
+	Tags         []string                   `json:"tags"`
+	CipTypes     map[string]string          `json:"cipTypes,omitempty"`     // tag name → CIP type (e.g. "REAL", "DINT")
+	StructTypes  map[string]string          `json:"structTypes,omitempty"`  // base tag name → UDT template name (e.g. "Analog_Input")
+	Deadbands    map[string]DeadBandConfig  `json:"deadbands,omitempty"`    // tag name → deadband config
+	DisableRBE   map[string]bool            `json:"disableRBE,omitempty"`   // tag name → true to force publish all
+	ScanRate     int                        `json:"scanRate,omitempty"`
+	SubscriberID string                     `json:"subscriberId"`
 }
 
 // UnsubscribeRequest is the JSON payload for ethernetip.unsubscribe requests.
@@ -39,15 +48,17 @@ type UnsubscribeRequest struct {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // PlcDataMessage is published on ethernetip.data.{deviceId}.{sanitizedTag}
-// when a monitored tag changes value.
+// when a monitored tag changes value (or RBE forces publish).
 type PlcDataMessage struct {
-	ModuleID    string      `json:"moduleId"`
-	DeviceID    string      `json:"deviceId"`
-	VariableID  string      `json:"variableId"`
-	Value       interface{} `json:"value"`
-	Timestamp   int64       `json:"timestamp"`
-	Datatype    string      `json:"datatype"`
-	Description string      `json:"description,omitempty"`
+	ModuleID    string          `json:"moduleId"`
+	DeviceID    string          `json:"deviceId"`
+	VariableID  string          `json:"variableId"`
+	Value       interface{}     `json:"value"`
+	Timestamp   int64           `json:"timestamp"`
+	Datatype    string          `json:"datatype"`
+	Description string          `json:"description,omitempty"`
+	Deadband    *DeadBandConfig `json:"deadband,omitempty"`
+	DisableRBE  bool            `json:"disableRBE,omitempty"`
 }
 
 // ServiceHeartbeat is published every 10s to the service_heartbeats KV bucket.
