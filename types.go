@@ -70,6 +70,13 @@ type ServiceHeartbeat struct {
 	Metadata    map[string]interface{} `json:"metadata,omitempty"`
 }
 
+// ServiceEnabledKV is the value stored in the service_enabled KV bucket.
+type ServiceEnabledKV struct {
+	ModuleID  string `json:"moduleId"`
+	Enabled   bool   `json:"enabled"`
+	UpdatedAt int64  `json:"updatedAt"`
+}
+
 // BrowseProgressMessage is published during async browse operations
 // to ethernetip.browse.progress.{browseId}.
 type BrowseProgressMessage struct {

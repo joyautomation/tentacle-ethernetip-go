@@ -6,6 +6,7 @@ import (
 	"math"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -48,6 +49,7 @@ type Scanner struct {
 	nc          *nats.Conn
 	connections map[string]*DeviceConnection
 	mu          sync.RWMutex
+	enabled     atomic.Bool // whether the scanner is enabled (actively polling/publishing)
 
 	browseSub      *nats.Subscription
 	subscribeSub   *nats.Subscription
@@ -58,9 +60,29 @@ type Scanner struct {
 
 // NewScanner creates a new EtherNet/IP scanner.
 func NewScanner(nc *nats.Conn) *Scanner {
-	return &Scanner{
+	s := &Scanner{
 		nc:          nc,
 		connections: make(map[string]*DeviceConnection),
+	}
+	s.enabled.Store(true) // enabled by default
+	return s
+}
+
+// IsEnabled returns whether the scanner is enabled.
+func (s *Scanner) IsEnabled() bool {
+	return s.enabled.Load()
+}
+
+// SetEnabled enables or disables the scanner.
+// When disabled, polling loops skip their work but connections are preserved.
+func (s *Scanner) SetEnabled(enabled bool) {
+	was := s.enabled.Swap(enabled)
+	if was != enabled {
+		if enabled {
+			logInfo("eip", "Scanner ENABLED — resuming polling")
+		} else {
+			logInfo("eip", "Scanner DISABLED — pausing polling (connections preserved)")
+		}
 	}
 }
 
@@ -592,6 +614,9 @@ func (s *Scanner) pollDevice(conn *DeviceConnection) {
 			logInfo("eip", "Poll loop stopped for device %s", conn.DeviceID)
 			return
 		case <-ticker.C:
+			if !s.enabled.Load() {
+				continue // skip polling when disabled
+			}
 			s.pollOnce(conn)
 		}
 	}
