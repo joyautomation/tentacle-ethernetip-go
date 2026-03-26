@@ -56,6 +56,12 @@ type Scanner struct {
 	unsubscribeSub *nats.Subscription
 	variablesSub   *nats.Subscription
 	commandSub     *nats.Subscription
+
+	// Rate tracking (sliding window)
+	publishTimes []int64
+	pollTimes    []int64 // each entry is one tag read from PLC
+	publishMu    sync.Mutex
+	pollMu       sync.Mutex
 }
 
 // NewScanner creates a new EtherNet/IP scanner.
@@ -66,6 +72,59 @@ func NewScanner(nc *nats.Conn) *Scanner {
 	}
 	s.enabled.Store(true) // enabled by default
 	return s
+}
+
+// recordPublish records n publish events for rate calculation.
+func (s *Scanner) recordPublish(n int) {
+	now := time.Now().UnixMilli()
+	s.publishMu.Lock()
+	for i := 0; i < n; i++ {
+		s.publishTimes = append(s.publishTimes, now)
+	}
+	s.publishMu.Unlock()
+}
+
+// PublishRate returns the current publish rate (metrics/second) over a 10s window.
+func (s *Scanner) PublishRate() float64 {
+	const windowMs int64 = 10_000
+	now := time.Now().UnixMilli()
+	cutoff := now - windowMs
+	s.publishMu.Lock()
+	// Remove old timestamps
+	i := 0
+	for i < len(s.publishTimes) && s.publishTimes[i] < cutoff {
+		i++
+	}
+	s.publishTimes = s.publishTimes[i:]
+	count := len(s.publishTimes)
+	s.publishMu.Unlock()
+	return float64(count) / (float64(windowMs) / 1000.0)
+}
+
+// recordPolls records n poll (tag read) events for rate calculation.
+func (s *Scanner) recordPolls(n int) {
+	now := time.Now().UnixMilli()
+	s.pollMu.Lock()
+	for i := 0; i < n; i++ {
+		s.pollTimes = append(s.pollTimes, now)
+	}
+	s.pollMu.Unlock()
+}
+
+// PollRate returns the current poll rate (tags read/second) over a 10s window.
+func (s *Scanner) PollRate() float64 {
+	const windowMs int64 = 10_000
+	now := time.Now().UnixMilli()
+	cutoff := now - windowMs
+	s.pollMu.Lock()
+	i := 0
+	for i < len(s.pollTimes) && s.pollTimes[i] < cutoff {
+		i++
+	}
+	s.pollTimes = s.pollTimes[i:]
+	count := len(s.pollTimes)
+	s.pollMu.Unlock()
+	return float64(count) / (float64(windowMs) / 1000.0)
 }
 
 // IsEnabled returns whether the scanner is enabled.
@@ -779,6 +838,11 @@ func (s *Scanner) pollOnce(conn *DeviceConnection) {
 		published++
 	}
 
+	if published > 0 {
+		s.recordPublish(published)
+	}
+	s.recordPolls(len(work))
+
 	logInfo("eip", "Poll cycle for %s: %d published, %d suppressed (RBE), %d total in %v", conn.DeviceID, published, suppressed, len(work), time.Since(pollStart))
 }
 
@@ -788,7 +852,7 @@ func (s *Scanner) pollOnce(conn *DeviceConnection) {
 
 // readBySize extracts a value from an already-read tag handle using size heuristics.
 // Used as fallback when CIP type is not known from browse.
-func readBySize(tag *PlcTag) (interface{}, string, error) {
+func readBySize(tag TagAccessor) (interface{}, string, error) {
 	size := tag.Size()
 	switch {
 	case size == 1:
@@ -816,7 +880,7 @@ func readBySize(tag *PlcTag) (interface{}, string, error) {
 }
 
 // readByKnownType reads a tag value using the exact CIP type from browse.
-func readByKnownType(tag *PlcTag, cipType string) (interface{}, string, error) {
+func readByKnownType(tag TagAccessor, cipType string) (interface{}, string, error) {
 	switch cipType {
 	case "BOOL":
 		return tag.GetBit(0), "BOOL", nil
@@ -851,7 +915,7 @@ func readByKnownType(tag *PlcTag, cipType string) (interface{}, string, error) {
 }
 
 // writeTagValue writes a value to a tag based on its CIP type.
-func writeTagValue(tag *PlcTag, cipType string, valueStr string) error {
+func writeTagValue(tag TagAccessor, cipType string, valueStr string) error {
 	// Read first to size the buffer
 	if err := tag.Read(10 * time.Second); err != nil {
 		return fmt.Errorf("pre-read failed: %w", err)
