@@ -26,7 +26,7 @@ func listTags(gateway string, port int) ([]TagEntry, error) {
 }
 
 // parseTagList parses the raw @tags response buffer into TagEntry structs.
-func parseTagList(tag *PlcTag) ([]TagEntry, error) {
+func parseTagList(tag TagAccessor) ([]TagEntry, error) {
 	size := tag.Size()
 	offset := 0
 	var tags []TagEntry
@@ -111,7 +111,7 @@ func readUdtTemplate(gateway string, port int, templateID uint16) (*UdtTemplate,
 //     [4:8]   Byte offset (uint32)
 //   UDT name (null-terminated string, may have ";extra" suffix)
 //   Field names (N null-terminated strings)
-func parseUdtTemplate(tag *PlcTag, templateID uint16) (*UdtTemplate, error) {
+func parseUdtTemplate(tag TagAccessor, templateID uint16) (*UdtTemplate, error) {
 	size := tag.Size()
 	if size < 14 {
 		return nil, fmt.Errorf("@udt/%d response too small: %d bytes", templateID, size)
@@ -215,7 +215,7 @@ func parseUdtTemplate(tag *PlcTag, templateID uint16) (*UdtTemplate, error) {
 }
 
 // readNullTerminatedStrings reads all null-terminated strings from offset to end.
-func readNullTerminatedStrings(tag *PlcTag, offset, size int) []string {
+func readNullTerminatedStrings(tag TagAccessor, offset, size int) []string {
 	var strings []string
 	start := offset
 

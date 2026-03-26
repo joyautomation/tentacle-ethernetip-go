@@ -219,8 +219,9 @@ func main() {
 			LastSeen:    time.Now().UnixMilli(),
 			StartedAt:   startedAt,
 			Metadata: map[string]interface{}{
-				"devices": string(devicesJSON),
-				"enabled": scanner.IsEnabled(),
+				"devices":     string(devicesJSON),
+				"enabled":     scanner.IsEnabled(),
+				"publishRate": fmt.Sprintf("%.1f", scanner.PollRate()),
 			},
 		}
 		data, err := json.Marshal(hb)

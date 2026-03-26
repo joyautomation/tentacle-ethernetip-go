@@ -1,15 +1,39 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*.*.*'
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
 
 env:
   LIBPLCTAG_VERSION: "2.6.15"
 
 jobs:
+  version:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      new_tag: ${{ steps.bump.outputs.new_tag }}
+      skipped: ${{ steps.bump.outputs.skipped }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bump version and push tag
+        id: bump
+        uses: anothrNick/github-tag-action@1.73.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BUMP: patch
+          WITH_V: true
+
   compile:
+    needs: version
+    if: ${{ needs.version.outputs.skipped != 'true' }}
     strategy:
       matrix:
         include:
@@ -46,15 +70,15 @@ jobs:
         run: |
           CGO_ENABLED=1 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
             go build -ldflags="-s -w" \
-            -o dist/tentacle-ethernetip-go-${{ matrix.platform }} .
+            -o dist/tentacle-ethernetip-${{ matrix.platform }} .
 
       - uses: actions/upload-artifact@v4
         with:
-          name: tentacle-ethernetip-go-${{ matrix.platform }}
-          path: dist/tentacle-ethernetip-go-*
+          name: tentacle-ethernetip-${{ matrix.platform }}
+          path: dist/tentacle-ethernetip-*
 
   release:
-    needs: compile
+    needs: [version, compile]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -66,4 +90,6 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.version.outputs.new_tag }}
+          generate_release_notes: true
           files: artifacts/*
