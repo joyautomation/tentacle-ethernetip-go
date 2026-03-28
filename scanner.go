@@ -833,7 +833,7 @@ func (s *Scanner) pollOnce(conn *DeviceConnection) {
 			dataMsg.DisableRBE = true
 		}
 		data, _ := json.Marshal(dataMsg)
-		subject := fmt.Sprintf("ethernetip.data.%s.%s", conn.DeviceID, sanitizeTagForSubject(r.name))
+		subject := fmt.Sprintf("ethernetip.data.%s.%s", sanitizeDeviceIdForSubject(conn.DeviceID), sanitizeTagForSubject(r.name))
 		_ = s.nc.Publish(subject, data)
 		published++
 	}

@@ -273,6 +273,12 @@ func resolveCipType(typeCode uint16) string {
 	return "UNKNOWN"
 }
 
+// sanitizeDeviceIdForSubject replaces spaces and NATS-invalid characters in a device ID.
+func sanitizeDeviceIdForSubject(id string) string {
+	r := strings.NewReplacer(" ", "_", ".", "_", "*", "_", ">", "_")
+	return r.Replace(id)
+}
+
 // sanitizeTagForSubject converts a tag name to a valid NATS subject segment.
 // "MyTag.Member" → "MyTag_Member"
 func sanitizeTagForSubject(tag string) string {
