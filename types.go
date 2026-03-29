@@ -1,6 +1,10 @@
 package main
 
-import "strings"
+import (
+	"strings"
+
+	common "github.com/joyautomation/tentacle-go-common"
+)
 
 // ═══════════════════════════════════════════════════════════════════════════
 // NATS Request/Response payloads
@@ -15,25 +19,18 @@ type BrowseRequest struct {
 	Async    bool   `json:"async,omitempty"`
 }
 
-// DeadBandConfig defines RBE (Report By Exception) thresholds for a tag.
-type DeadBandConfig struct {
-	Value   float64 `json:"value"`            // only publish if change exceeds this amount
-	MinTime int64   `json:"minTime,omitempty"` // ms — suppress publishes more frequent than this
-	MaxTime int64   `json:"maxTime,omitempty"` // ms — force publish if exceeded, 0 = disabled
-}
-
 // SubscribeRequest is the JSON payload for ethernetip.subscribe requests.
 type SubscribeRequest struct {
-	DeviceID     string                     `json:"deviceId"`
-	Host         string                     `json:"host"`
-	Port         int                        `json:"port,omitempty"`
-	Tags         []string                   `json:"tags"`
-	CipTypes     map[string]string          `json:"cipTypes,omitempty"`     // tag name → CIP type (e.g. "REAL", "DINT")
-	StructTypes  map[string]string          `json:"structTypes,omitempty"`  // base tag name → UDT template name (e.g. "Analog_Input")
-	Deadbands    map[string]DeadBandConfig  `json:"deadbands,omitempty"`    // tag name → deadband config
-	DisableRBE   map[string]bool            `json:"disableRBE,omitempty"`   // tag name → true to force publish all
-	ScanRate     int                        `json:"scanRate,omitempty"`
-	SubscriberID string                     `json:"subscriberId"`
+	DeviceID     string                            `json:"deviceId"`
+	Host         string                            `json:"host"`
+	Port         int                               `json:"port,omitempty"`
+	Tags         []string                          `json:"tags"`
+	CipTypes     map[string]string                 `json:"cipTypes,omitempty"`     // tag name → CIP type (e.g. "REAL", "DINT")
+	StructTypes  map[string]string                 `json:"structTypes,omitempty"`  // base tag name → UDT template name (e.g. "Analog_Input")
+	Deadbands    map[string]common.DeadBandConfig  `json:"deadbands,omitempty"`    // tag name → deadband config
+	DisableRBE   map[string]bool                   `json:"disableRBE,omitempty"`   // tag name → true to force publish all
+	ScanRate     int                               `json:"scanRate,omitempty"`
+	SubscriberID string                            `json:"subscriberId"`
 }
 
 // UnsubscribeRequest is the JSON payload for ethernetip.unsubscribe requests.
@@ -41,64 +38,6 @@ type UnsubscribeRequest struct {
 	DeviceID     string   `json:"deviceId"`
 	Tags         []string `json:"tags"`
 	SubscriberID string   `json:"subscriberId"`
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Published message types
-// ═══════════════════════════════════════════════════════════════════════════
-
-// PlcDataMessage is published on ethernetip.data.{deviceId}.{sanitizedTag}
-// when a monitored tag changes value (or RBE forces publish).
-type PlcDataMessage struct {
-	ModuleID    string          `json:"moduleId"`
-	DeviceID    string          `json:"deviceId"`
-	VariableID  string          `json:"variableId"`
-	Value       interface{}     `json:"value"`
-	Timestamp   int64           `json:"timestamp"`
-	Datatype    string          `json:"datatype"`
-	Description string          `json:"description,omitempty"`
-	Deadband    *DeadBandConfig `json:"deadband,omitempty"`
-	DisableRBE  bool            `json:"disableRBE,omitempty"`
-}
-
-// ServiceHeartbeat is published every 10s to the service_heartbeats KV bucket.
-type ServiceHeartbeat struct {
-	ServiceType string                 `json:"serviceType"`
-	ModuleID    string                 `json:"moduleId"`
-	LastSeen    int64                  `json:"lastSeen"`
-	StartedAt   int64                  `json:"startedAt"`
-	Metadata    map[string]interface{} `json:"metadata,omitempty"`
-}
-
-// ServiceEnabledKV is the value stored in the service_enabled KV bucket.
-type ServiceEnabledKV struct {
-	ModuleID  string `json:"moduleId"`
-	Enabled   bool   `json:"enabled"`
-	UpdatedAt int64  `json:"updatedAt"`
-}
-
-// BrowseProgressMessage is published during async browse operations
-// to ethernetip.browse.progress.{browseId}.
-type BrowseProgressMessage struct {
-	BrowseID      string `json:"browseId"`
-	ModuleID      string `json:"moduleId"`
-	DeviceID      string `json:"deviceId"`
-	Phase         string `json:"phase"` // "discovering", "expanding", "reading", "caching", "completed", "failed"
-	TotalTags     int    `json:"totalTags"`
-	CompletedTags int    `json:"completedTags"`
-	ErrorCount    int    `json:"errorCount"`
-	Message       string `json:"message,omitempty"`
-	Timestamp     int64  `json:"timestamp"`
-}
-
-// ServiceLogEntry is published to service.logs.ethernetip.ethernetip for log streaming.
-type ServiceLogEntry struct {
-	Timestamp   int64  `json:"timestamp"`
-	Level       string `json:"level"`
-	Message     string `json:"message"`
-	ServiceType string `json:"serviceType"`
-	ModuleID    string `json:"moduleId"`
-	Logger      string `json:"logger,omitempty"`
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -271,12 +210,6 @@ func resolveCipType(typeCode uint16) string {
 		return info.Name
 	}
 	return "UNKNOWN"
-}
-
-// sanitizeDeviceIdForSubject replaces spaces and NATS-invalid characters in a device ID.
-func sanitizeDeviceIdForSubject(id string) string {
-	r := strings.NewReplacer(" ", "_", ".", "_", "*", "_", ">", "_")
-	return r.Replace(id)
 }
 
 // sanitizeTagForSubject converts a tag name to a valid NATS subject segment.

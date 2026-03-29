@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	common "github.com/joyautomation/tentacle-go-common"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -34,7 +35,7 @@ func (l *natsLogger) publish(level, logger, msg string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	entry := ServiceLogEntry{
+	entry := common.ServiceLogEntry{
 		Timestamp:   time.Now().UnixMilli(),
 		Level:       level,
 		Message:     msg,
@@ -179,7 +180,7 @@ func main() {
 
 	// Check initial enabled state
 	if entry, err := enabledKv.Get(ctx, moduleID); err == nil {
-		var state ServiceEnabledKV
+		var state common.ServiceEnabledKV
 		if json.Unmarshal(entry.Value(), &state) == nil {
 			scanner.SetEnabled(state.Enabled)
 			logInfo("eip", "Initial enabled state: %v", state.Enabled)
@@ -200,7 +201,7 @@ func main() {
 					scanner.SetEnabled(true) // deleted = default to enabled
 					continue
 				}
-				var state ServiceEnabledKV
+				var state common.ServiceEnabledKV
 				if json.Unmarshal(entry.Value(), &state) == nil {
 					scanner.SetEnabled(state.Enabled)
 				}
@@ -213,7 +214,7 @@ func main() {
 	publishHeartbeat := func() {
 		devices := scanner.ActiveDevices()
 		devicesJSON, _ := json.Marshal(devices)
-		hb := ServiceHeartbeat{
+		hb := common.ServiceHeartbeat{
 			ServiceType: serviceType,
 			ModuleID:    moduleID,
 			LastSeen:    time.Now().UnixMilli(),

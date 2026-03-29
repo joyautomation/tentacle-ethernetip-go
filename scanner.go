@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	common "github.com/joyautomation/tentacle-go-common"
 	"github.com/nats-io/nats.go"
 )
 
@@ -34,9 +35,9 @@ type CachedVar struct {
 	Value              interface{}
 	Quality            string
 	LastRead           int64
-	TagHandle          *PlcTag          // persistent libplctag handle — created once, reused on every poll
-	CreateFails        int              // consecutive handle creation failures — stop retrying after maxCreateRetries
-	Deadband           *DeadBandConfig  // RBE deadband config (nil = publish on any change)
+	TagHandle          *PlcTag                 // persistent libplctag handle — created once, reused on every poll
+	CreateFails        int                     // consecutive handle creation failures — stop retrying after maxCreateRetries
+	Deadband           *common.DeadBandConfig  // RBE deadband config (nil = publish on any change)
 	DisableRBE         bool             // force publish all values
 	LastPublishedValue interface{}      // last value that was actually published
 	LastPublishedTime  int64            // unix ms when last published
@@ -261,7 +262,7 @@ func (s *Scanner) handleBrowse(msg *nats.Msg) {
 		browseID = uuid.New().String()
 	}
 
-	publishProgress := func(progress BrowseProgressMessage) {
+	publishProgress := func(progress common.BrowseProgressMessage) {
 		subject := fmt.Sprintf("ethernetip.browse.progress.%s", browseID)
 		data, _ := json.Marshal(progress)
 		_ = s.nc.Publish(subject, data)
@@ -274,7 +275,7 @@ func (s *Scanner) handleBrowse(msg *nats.Msg) {
 		result, err := browseDevice(req.Host, req.Port, req.DeviceID, browseID, publishProgress)
 		if err != nil {
 			logError("eip", "Browse failed for %s: %v", req.DeviceID, err)
-			publishProgress(BrowseProgressMessage{
+			publishProgress(common.BrowseProgressMessage{
 				BrowseID:  browseID,
 				ModuleID:  moduleID,
 				DeviceID:  req.DeviceID,
@@ -818,7 +819,7 @@ func (s *Scanner) pollOnce(conn *DeviceConnection) {
 		}
 		conn.mu.Unlock()
 
-		dataMsg := PlcDataMessage{
+		dataMsg := common.PlcDataMessage{
 			ModuleID:   moduleID,
 			DeviceID:   conn.DeviceID,
 			VariableID: r.name,
@@ -833,7 +834,7 @@ func (s *Scanner) pollOnce(conn *DeviceConnection) {
 			dataMsg.DisableRBE = true
 		}
 		data, _ := json.Marshal(dataMsg)
-		subject := fmt.Sprintf("ethernetip.data.%s.%s", sanitizeDeviceIdForSubject(conn.DeviceID), sanitizeTagForSubject(r.name))
+		subject := fmt.Sprintf("ethernetip.data.%s.%s", common.SanitizeDeviceIDForSubject(conn.DeviceID), sanitizeTagForSubject(r.name))
 		_ = s.nc.Publish(subject, data)
 		published++
 	}

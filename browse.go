@@ -5,6 +5,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	common "github.com/joyautomation/tentacle-go-common"
 )
 
 const browseTimeout = 30 * time.Second
@@ -253,13 +255,13 @@ func isPrintable(s string) bool {
 
 // browseDevice lists all tags and reads all UDT templates from a device.
 // Returns the full BrowseResult ready for JSON serialization.
-func browseDevice(gateway string, port int, deviceID string, browseID string, publishProgress func(BrowseProgressMessage)) (*BrowseResult, error) {
+func browseDevice(gateway string, port int, deviceID string, browseID string, publishProgress func(common.BrowseProgressMessage)) (*BrowseResult, error) {
 	if port == 0 {
 		port = 44818
 	}
 
 	// Phase 1: List all tags
-	publishProgress(BrowseProgressMessage{
+	publishProgress(common.BrowseProgressMessage{
 		BrowseID:  browseID,
 		ModuleID:  moduleID,
 		DeviceID:  deviceID,
@@ -275,7 +277,7 @@ func browseDevice(gateway string, port int, deviceID string, browseID string, pu
 
 	logInfo("eip", "Listed %d tags from %s:%d", len(tags), gateway, port)
 
-	publishProgress(BrowseProgressMessage{
+	publishProgress(common.BrowseProgressMessage{
 		BrowseID:  browseID,
 		ModuleID:  moduleID,
 		DeviceID:  deviceID,
@@ -296,7 +298,7 @@ func browseDevice(gateway string, port int, deviceID string, browseID string, pu
 	logInfo("eip", "Found %d unique UDT template IDs", len(templateIDs))
 
 	// Phase 3: Read all UDT templates (recursively discovers nested UDTs)
-	publishProgress(BrowseProgressMessage{
+	publishProgress(common.BrowseProgressMessage{
 		BrowseID:  browseID,
 		ModuleID:  moduleID,
 		DeviceID:  deviceID,
@@ -359,7 +361,7 @@ func browseDevice(gateway string, port int, deviceID string, browseID string, pu
 	}
 
 	// Phase 4: Build browse result
-	publishProgress(BrowseProgressMessage{
+	publishProgress(common.BrowseProgressMessage{
 		BrowseID:      browseID,
 		ModuleID:      moduleID,
 		DeviceID:      deviceID,
@@ -452,7 +454,7 @@ func browseDevice(gateway string, port int, deviceID string, browseID string, pu
 		StructTags: structTags,
 	}
 
-	publishProgress(BrowseProgressMessage{
+	publishProgress(common.BrowseProgressMessage{
 		BrowseID:      browseID,
 		ModuleID:      moduleID,
 		DeviceID:      deviceID,
@@ -519,7 +521,7 @@ const (
 )
 
 // filterReadable tests candidates for readability concurrently and returns only readable ones.
-func filterReadable(candidates []candidateVar, gateway string, port int, publishProgress func(BrowseProgressMessage), browseID, deviceID string) []VariableInfo {
+func filterReadable(candidates []candidateVar, gateway string, port int, publishProgress func(common.BrowseProgressMessage), browseID, deviceID string) []VariableInfo {
 	type result struct {
 		index    int
 		readable bool
@@ -559,7 +561,7 @@ func filterReadable(candidates []candidateVar, gateway string, port int, publish
 		readable[r.index] = r.readable
 		completed++
 		if completed%50 == 0 || completed == len(candidates) {
-			publishProgress(BrowseProgressMessage{
+			publishProgress(common.BrowseProgressMessage{
 				BrowseID:      browseID,
 				ModuleID:      moduleID,
 				DeviceID:      deviceID,

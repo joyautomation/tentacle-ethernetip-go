@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	common "github.com/joyautomation/tentacle-go-common"
 	"github.com/nats-io/nats.go"
 	natsserver "github.com/nats-io/nats-server/v2/server"
 )
@@ -79,7 +80,7 @@ func TestShouldPublish(t *testing.T) {
 			"deadband - change below threshold suppressed",
 			&CachedVar{
 				LastPublishedTime: 1000, LastPublishedValue: 42.0,
-				Deadband: &DeadBandConfig{Value: 1.0},
+				Deadband: &common.DeadBandConfig{Value: 1.0},
 			},
 			42.5, 2000, false,
 		},
@@ -87,7 +88,7 @@ func TestShouldPublish(t *testing.T) {
 			"deadband - change above threshold publishes",
 			&CachedVar{
 				LastPublishedTime: 1000, LastPublishedValue: 42.0,
-				Deadband: &DeadBandConfig{Value: 1.0},
+				Deadband: &common.DeadBandConfig{Value: 1.0},
 			},
 			43.5, 2000, true,
 		},
@@ -95,7 +96,7 @@ func TestShouldPublish(t *testing.T) {
 			"deadband - exactly at threshold suppressed",
 			&CachedVar{
 				LastPublishedTime: 1000, LastPublishedValue: 42.0,
-				Deadband: &DeadBandConfig{Value: 1.0},
+				Deadband: &common.DeadBandConfig{Value: 1.0},
 			},
 			43.0, 2000, false, // math.Abs(43-42) = 1.0, NOT > 1.0
 		},
@@ -103,7 +104,7 @@ func TestShouldPublish(t *testing.T) {
 			"minTime not elapsed - suppress even with large change",
 			&CachedVar{
 				LastPublishedTime: 1000, LastPublishedValue: 42.0,
-				Deadband: &DeadBandConfig{Value: 0.1, MinTime: 5000},
+				Deadband: &common.DeadBandConfig{Value: 0.1, MinTime: 5000},
 			},
 			99.0, 2000, false,
 		},
@@ -111,7 +112,7 @@ func TestShouldPublish(t *testing.T) {
 			"minTime elapsed - publish",
 			&CachedVar{
 				LastPublishedTime: 1000, LastPublishedValue: 42.0,
-				Deadband: &DeadBandConfig{Value: 0.1, MinTime: 500},
+				Deadband: &common.DeadBandConfig{Value: 0.1, MinTime: 500},
 			},
 			99.0, 2000, true,
 		},
@@ -119,7 +120,7 @@ func TestShouldPublish(t *testing.T) {
 			"maxTime exceeded - force publish even with no change",
 			&CachedVar{
 				LastPublishedTime: 1000, LastPublishedValue: 42.0,
-				Deadband: &DeadBandConfig{Value: 100.0, MaxTime: 5000},
+				Deadband: &common.DeadBandConfig{Value: 100.0, MaxTime: 5000},
 			},
 			42.0, 6001, true,
 		},
@@ -127,7 +128,7 @@ func TestShouldPublish(t *testing.T) {
 			"maxTime not yet exceeded",
 			&CachedVar{
 				LastPublishedTime: 1000, LastPublishedValue: 42.0,
-				Deadband: &DeadBandConfig{Value: 100.0, MaxTime: 5000},
+				Deadband: &common.DeadBandConfig{Value: 100.0, MaxTime: 5000},
 			},
 			42.0, 4000, false,
 		},
@@ -155,7 +156,7 @@ func TestShouldPublish(t *testing.T) {
 			"boolean change with deadband - numeric comparison",
 			&CachedVar{
 				LastPublishedTime: 1000, LastPublishedValue: true,
-				Deadband: &DeadBandConfig{Value: 0.5},
+				Deadband: &common.DeadBandConfig{Value: 0.5},
 			},
 			false, 2000, true, // |0-1| = 1.0 > 0.5
 		},
@@ -163,7 +164,7 @@ func TestShouldPublish(t *testing.T) {
 			"boolean change with large deadband - suppressed",
 			&CachedVar{
 				LastPublishedTime: 1000, LastPublishedValue: true,
-				Deadband: &DeadBandConfig{Value: 2.0},
+				Deadband: &common.DeadBandConfig{Value: 2.0},
 			},
 			false, 2000, false, // |0-1| = 1.0 NOT > 2.0
 		},
@@ -863,7 +864,7 @@ func TestHandleSubscribeWithDeadbands(t *testing.T) {
 		DeviceID:     "plc2",
 		Host:         "192.168.1.200",
 		Tags:         []string{"Temp", "Status"},
-		Deadbands:    map[string]DeadBandConfig{"Temp": {Value: 0.5, MinTime: 1000}},
+		Deadbands:    map[string]common.DeadBandConfig{"Temp": {Value: 0.5, MinTime: 1000}},
 		DisableRBE:   map[string]bool{"Status": true},
 		SubscriberID: "sub1",
 	}
