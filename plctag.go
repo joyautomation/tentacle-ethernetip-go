@@ -37,6 +37,9 @@ func createTag(attrs string, timeout time.Duration) (*PlcTag, error) {
 
 // Close destroys the tag and frees resources.
 func (t *PlcTag) Close() {
+	if t == nil {
+		return
+	}
 	if t.handle >= 0 {
 		C.plc_tag_destroy(t.handle)
 		t.handle = -1

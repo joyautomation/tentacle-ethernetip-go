@@ -64,10 +64,11 @@ type VariableInfo struct {
 
 // UdtMemberExport describes a single member of a UDT template.
 type UdtMemberExport struct {
-	Name    string `json:"name"`
+	Name     string `json:"name"`
 	Datatype string `json:"datatype"`
-	UdtType string `json:"udtType,omitempty"`
-	IsArray bool   `json:"isArray"`
+	CipType  string `json:"cipType,omitempty"` // raw CIP type (e.g. "REAL", "DINT")
+	UdtType  string `json:"udtType,omitempty"`
+	IsArray  bool   `json:"isArray"`
 }
 
 // UdtExport describes a UDT template definition.

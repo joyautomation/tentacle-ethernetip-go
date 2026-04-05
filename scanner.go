@@ -16,15 +16,16 @@ import (
 
 // DeviceConnection holds the state for a connected EtherNet/IP device.
 type DeviceConnection struct {
-	DeviceID    string
-	Gateway     string
-	Port        int
-	Variables   map[string]*CachedVar
-	StructTypes map[string]string              // base tag name → UDT template name (from browse)
-	Subscribers map[string]map[string]bool // subscriberID → set of tag names
-	ScanRate    time.Duration
-	stopChan    chan struct{}
-	mu          sync.RWMutex
+	DeviceID        string
+	Gateway         string
+	Port            int
+	Variables       map[string]*CachedVar
+	StructTypes     map[string]string              // base tag name → UDT template name (from browse)
+	Subscribers     map[string]map[string]bool // subscriberID → set of tag names
+	ScanRate        time.Duration
+	stopChan        chan struct{}
+	scanRateChanged chan struct{} // signaled when ScanRate is updated
+	mu              sync.RWMutex
 }
 
 // CachedVar holds the cached state of a single tag.
@@ -318,19 +319,34 @@ func (s *Scanner) handleSubscribe(msg *nats.Msg) {
 	conn, exists := s.connections[req.DeviceID]
 	if !exists {
 		conn = &DeviceConnection{
-			DeviceID:    req.DeviceID,
-			Gateway:     req.Host,
-			Port:        req.Port,
-			Variables:   make(map[string]*CachedVar),
-			StructTypes: make(map[string]string),
-			Subscribers: make(map[string]map[string]bool),
-			ScanRate:    time.Duration(scanRate) * time.Millisecond,
-			stopChan:    make(chan struct{}),
+			DeviceID:        req.DeviceID,
+			Gateway:         req.Host,
+			Port:            req.Port,
+			Variables:       make(map[string]*CachedVar),
+			StructTypes:     make(map[string]string),
+			Subscribers:     make(map[string]map[string]bool),
+			ScanRate:        time.Duration(scanRate) * time.Millisecond,
+			stopChan:        make(chan struct{}),
+			scanRateChanged: make(chan struct{}, 1),
 		}
 		s.connections[req.DeviceID] = conn
 		logInfo("eip", "Created connection for device %s (%s:%d)", req.DeviceID, req.Host, req.Port)
 	}
 	s.mu.Unlock()
+
+	// Update scanRate if changed on re-subscribe
+	newRate := time.Duration(scanRate) * time.Millisecond
+	conn.mu.Lock()
+	if conn.ScanRate != newRate {
+		logInfo("eip", "Updating scan rate for device %s: %v → %v", req.DeviceID, conn.ScanRate, newRate)
+		conn.ScanRate = newRate
+		// Signal the poll loop to reset its ticker
+		select {
+		case conn.scanRateChanged <- struct{}{}:
+		default:
+		}
+	}
+	conn.mu.Unlock()
 
 	conn.mu.Lock()
 	// Merge structTypes from subscribe request
@@ -345,6 +361,7 @@ func (s *Scanner) handleSubscribe(msg *nats.Msg) {
 	}
 
 	addedCount := 0
+	rbeResetCount := 0
 	for _, tagName := range req.Tags {
 		conn.Subscribers[req.SubscriberID][tagName] = true
 
@@ -374,8 +391,13 @@ func (s *Scanner) handleSubscribe(msg *nats.Msg) {
 			conn.Variables[tagName] = cv
 			addedCount++
 		} else {
-			// Update RBE config for existing variables (subscriber may have changed config)
+			// Update config for existing variables (subscriber may have changed config)
 			existing := conn.Variables[tagName]
+			if req.CipTypes != nil {
+				if ct, ok := req.CipTypes[tagName]; ok && ct != "" {
+					existing.CipType = ct
+				}
+			}
 			if req.Deadbands != nil {
 				if db, ok := req.Deadbands[tagName]; ok {
 					existing.Deadband = &db
@@ -386,6 +408,14 @@ func (s *Scanner) handleSubscribe(msg *nats.Msg) {
 					existing.DisableRBE = disable
 				}
 			}
+			// Reset RBE state so the next poll publishes current values.
+			// When a subscriber (re)subscribes, it needs the current state for
+			// all tags — including static values suppressed by RBE.
+			if existing.LastPublishedTime > 0 {
+				existing.LastPublishedTime = 0
+				existing.LastPublishedValue = nil
+				rbeResetCount++
+			}
 		}
 	}
 	conn.mu.Unlock()
@@ -395,7 +425,7 @@ func (s *Scanner) handleSubscribe(msg *nats.Msg) {
 		go s.pollDevice(conn)
 	}
 
-	logInfo("eip", "Subscriber %s added %d tags to device %s (total: %d)", req.SubscriberID, len(req.Tags), req.DeviceID, len(conn.Variables))
+	logInfo("eip", "Subscriber %s added %d tags to device %s (total: %d, %d RBE reset)", req.SubscriberID, len(req.Tags), req.DeviceID, len(conn.Variables), rbeResetCount)
 
 	s.respondJSON(msg, map[string]interface{}{
 		"success": true,
@@ -425,11 +455,16 @@ func (s *Scanner) handleUnsubscribe(msg *nats.Msg) {
 
 	conn.mu.Lock()
 	if subs, ok := conn.Subscribers[req.SubscriberID]; ok {
-		for _, tag := range req.Tags {
-			delete(subs, tag)
-		}
-		if len(subs) == 0 {
+		if len(req.Tags) == 0 {
+			// No tags specified = unsubscribe all tags for this subscriber
 			delete(conn.Subscribers, req.SubscriberID)
+		} else {
+			for _, tag := range req.Tags {
+				delete(subs, tag)
+			}
+			if len(subs) == 0 {
+				delete(conn.Subscribers, req.SubscriberID)
+			}
 		}
 	}
 
@@ -673,6 +708,12 @@ func (s *Scanner) pollDevice(conn *DeviceConnection) {
 		case <-conn.stopChan:
 			logInfo("eip", "Poll loop stopped for device %s", conn.DeviceID)
 			return
+		case <-conn.scanRateChanged:
+			conn.mu.RLock()
+			newRate := conn.ScanRate
+			conn.mu.RUnlock()
+			ticker.Reset(newRate)
+			logInfo("eip", "Poll rate updated for device %s to %v", conn.DeviceID, newRate)
 		case <-ticker.C:
 			if !s.enabled.Load() {
 				continue // skip polling when disabled
@@ -753,8 +794,10 @@ func (s *Scanner) pollOnce(conn *DeviceConnection) {
 				conn.mu.Lock()
 				if v, ok := conn.Variables[tw.name]; ok {
 					v.Quality = "bad"
-					v.TagHandle.Close()
-					v.TagHandle = nil
+					if v.TagHandle != nil {
+						v.TagHandle.Close()
+						v.TagHandle = nil
+					}
 					v.CreateFails = 0
 				}
 				conn.mu.Unlock()
@@ -844,7 +887,7 @@ func (s *Scanner) pollOnce(conn *DeviceConnection) {
 	}
 	s.recordPolls(len(work))
 
-	logInfo("eip", "Poll cycle for %s: %d published, %d suppressed (RBE), %d total in %v", conn.DeviceID, published, suppressed, len(work), time.Since(pollStart))
+	logDebug("eip", "Poll cycle for %s: %d published, %d suppressed (RBE), %d total in %v", conn.DeviceID, published, suppressed, len(work), time.Since(pollStart))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

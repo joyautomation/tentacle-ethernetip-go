@@ -392,7 +392,8 @@ func browseDevice(gateway string, port int, deviceID string, browseID string, pu
 
 			structTags[t.Name] = tmpl.Name
 
-			// Expand only first-level struct members (deeper levels can't be read individually)
+			// Expand first-level struct members only (nested structs like TIMER are omitted —
+			// they often have restricted CIP access within AOIs and can't be read individually)
 			expandMembers(&structCandidates, t.Name, tmpl, templates, deviceID, gateway, port, 0, 1)
 		} else {
 			// Atomic tag
@@ -423,7 +424,8 @@ func browseDevice(gateway string, port int, deviceID string, browseID string, pu
 	variables = append(variables, atomicVars...)
 	variables = append(variables, readableStructVars...)
 
-	// Build UDT exports
+	// Build UDT exports (omit nested STRUCT members — they often have restricted
+	// CIP access within AOIs and can't be read as individual sub-members)
 	udts := make(map[string]UdtExport)
 	for _, tmpl := range templates {
 		members := make([]UdtMemberExport, 0)
@@ -431,13 +433,15 @@ func browseDevice(gateway string, port int, deviceID string, browseID string, pu
 			if field.IsHidden {
 				continue
 			}
-			natsType := cipToNatsDatatype(field.Datatype)
+			// Skip nested struct members (TIMER, COUNTER, CONTROL, etc.)
 			if field.Datatype == "STRUCT" {
-				natsType = "STRUCT"
+				continue
 			}
+			natsType := cipToNatsDatatype(field.Datatype)
 			members = append(members, UdtMemberExport{
 				Name:     field.Name,
 				Datatype: natsType,
+				CipType:  field.Datatype,
 				UdtType:  field.UdtName,
 				IsArray:  field.IsArray,
 			})
